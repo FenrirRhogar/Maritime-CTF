@@ -13,3 +13,4 @@ _version.py
 *.mp4
 *.avi
 __mapcache__/
+.idea
