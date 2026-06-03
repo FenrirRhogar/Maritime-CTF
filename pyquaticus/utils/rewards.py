@@ -193,7 +193,7 @@ def caps_and_grabs(
     scrimmage_coords: np.ndarray,
     max_speeds: list,
     tagging_cooldown: float
-):
+    ):
     reward = 0.0
     prev_num_oob = prev_state['agent_oob'][agents.index(agent_id)]
     num_oob = state['agent_oob'][agents.index(agent_id)]
@@ -222,3 +222,315 @@ def caps_and_grabs(
     return reward
 
 ### Add Custom Reward Functions Here ###
+
+# --- Helper Functions for Custom Dense Reward ---
+
+def _reward_border_penalty(state, agent_idx, env_size, buffer_dist, oob_penalty, proximity_max_penalty):
+    """Calculates penalties for being near or out of boundaries."""
+    reward = 0.0
+    pos = state['agent_position'][agent_idx]
+    x, y = pos[0], pos[1]
+    width, height = env_size[0], env_size[1]
+    
+    # Large penalty for going Out-Of-Bounds (OOB)
+    if state['agent_oob'][agent_idx]:
+        reward -= oob_penalty
+    
+    # Small progressive penalty for being too close to the edge
+    dist_to_left = x
+    dist_to_right = width - x
+    dist_to_bottom = y
+    dist_to_top = height - y
+    min_dist_to_edge = min(dist_to_left, dist_to_right, dist_to_bottom, dist_to_top)
+    
+    if min_dist_to_edge < buffer_dist:
+        proximity_penalty = proximity_max_penalty * (1.0 - (min_dist_to_edge / buffer_dist))
+        reward -= proximity_penalty
+    return reward
+
+def _reward_goal_progress(state, prev_state, agent_idx, team, progress_multiplier):
+    """Rewards moving closer to the opponent's flag when on their side."""
+    reward = 0.0
+    
+    # Only reward if we DON'T have the flag yet (we are hunting it)
+    if state['agent_has_flag'][agent_idx]:
+        return 0.0
+
+    # Only reward if we are on the opponent's side
+    if state['agent_on_sides'][agent_idx]:
+        return 0.0
+
+    opponent_team = 1 - int(team) # If we are 0 (Blue), opponent is 1 (Red)
+    flag_pos = state['flag_position'][opponent_team]
+    
+    curr_pos = state['agent_position'][agent_idx]
+    prev_pos = prev_state['agent_position'][agent_idx]
+    
+    dist_curr = np.linalg.norm(curr_pos - flag_pos)
+    dist_prev = np.linalg.norm(prev_pos - flag_pos)
+    
+    # If distance decreased, we made progress
+    if dist_curr < dist_prev:
+        # Reward is proportional to how close we are (higher reward when very close)
+        progress = dist_prev - dist_curr
+        closeness_multiplier = 100.0 / max(dist_curr, 1.0) 
+        reward += progress * closeness_multiplier * progress_multiplier
+        
+    return reward
+
+def _reward_flag_grab(state, prev_state, agent_idx, grab_reward):
+    """Provides a one-time reward when the agent successfully grabs the flag."""
+    # Check if the agent just acquired the flag in this step
+    if state['agent_has_flag'][agent_idx] and not prev_state['agent_has_flag'][agent_idx]:
+        return grab_reward
+    return 0.0
+
+def _reward_return_progress(state, prev_state, agent_idx, team, progress_multiplier):
+    """Rewards moving closer to home base when carrying the flag."""
+    reward = 0.0
+    
+    # Only reward if we HAVE the flag
+    if not state['agent_has_flag'][agent_idx]:
+        return 0.0
+
+    home_pos = state['flag_home'][int(team)]
+    
+    curr_pos = state['agent_position'][agent_idx]
+    prev_pos = prev_state['agent_position'][agent_idx]
+    
+    dist_curr = np.linalg.norm(curr_pos - home_pos)
+    dist_prev = np.linalg.norm(prev_pos - home_pos)
+    
+    # If distance decreased, we made progress
+    if dist_curr < dist_prev:
+        progress = dist_prev - dist_curr
+        closeness_multiplier = 100.0 / max(dist_curr, 1.0) 
+        reward += progress * closeness_multiplier * progress_multiplier
+        
+    return reward
+
+def _reward_flag_capture(state, prev_state, team, capture_reward):
+    """Provides a reward when the team successfully captures a flag."""
+    team_idx = int(team)
+    if state['captures'][team_idx] > prev_state['captures'][team_idx]:
+        return capture_reward
+    return 0.0
+
+def _reward_tagging(state, agent_idx, team, base_tag_reward, flag_tag_reward):
+    """Rewards tagging opponents, with a bonus for tagging the flag carrier."""
+    reward = 0.0
+    tagged_opponent_idx = state['agent_made_tag'][agent_idx]
+    
+    if tagged_opponent_idx is not None:
+        # 1. Base reward for tagging any opponent
+        reward += base_tag_reward
+        
+        # 2. Bonus reward if the tagged opponent was carrying our flag
+        # (This makes the agent a "Hero" defender)
+        if state['agent_has_flag'][tagged_opponent_idx]:
+            reward += flag_tag_reward
+            
+    return reward
+
+def _reward_teammate_proximity(state, agent_idx, team, agent_inds_of_team, avoid_dist, max_penalty):
+    """Penalizes being too close to teammates to encourage spreading out."""
+    reward = 0.0
+    my_pos = state['agent_position'][agent_idx]
+    
+    # Get indices of all teammates
+    teammate_indices = agent_inds_of_team[team]
+    
+    for tm_idx in teammate_indices:
+        if tm_idx == agent_idx:
+            continue  # Don't compare to self
+            
+        tm_pos = state['agent_position'][tm_idx]
+        dist = np.linalg.norm(my_pos - tm_pos)
+        
+        if dist < avoid_dist:
+            # Penalty scales from 0.0 (at avoid_dist) to max_penalty (at 0m)
+            proximity_factor = 1.0 - (dist / avoid_dist)
+            reward -= proximity_factor * max_penalty
+            
+    return reward
+
+def _reward_tagged_penalty(state, prev_state, agent_idx, penalty):
+    """Penalizes the agent for being tagged by an opponent."""
+    if state['agent_is_tagged'][agent_idx] and not prev_state['agent_is_tagged'][agent_idx]:
+        return -penalty
+    return 0.0
+
+def _reward_intercept_progress(state, prev_state, agent_idx, team, agents, agent_inds_of_team, progress_multiplier):
+    """Rewards moving closer to the opponent who has our flag."""
+    reward = 0.0
+    
+    # Find if any opponent has our flag
+    # Opponents are agents NOT in our team's indices
+    opponent_carrier_idx = None
+    my_teammates = agent_inds_of_team[team]
+    
+    for idx in range(len(agents)):
+        if idx not in my_teammates and state['agent_has_flag'][idx]:
+            opponent_carrier_idx = idx
+            break
+
+    if opponent_carrier_idx is not None:
+        carrier_pos = state['agent_position'][opponent_carrier_idx]
+        curr_pos = state['agent_position'][agent_idx]
+        prev_pos = prev_state['agent_position'][agent_idx]
+        
+        dist_curr = np.linalg.norm(curr_pos - carrier_pos)
+        dist_prev = np.linalg.norm(prev_pos - carrier_pos)
+        
+        if dist_curr < dist_prev:
+            progress = dist_prev - dist_curr
+            # Higher reward for being close to the carrier
+            closeness_multiplier = 100.0 / max(dist_curr, 1.0)
+            reward += progress * closeness_multiplier * progress_multiplier
+            
+    return reward
+
+def _reward_enemy_proximity(state, agent_idx, team, agent_inds_of_team, avoid_dist, max_penalty):
+    """Penalizes being too close to active opponents when in enemy territory."""
+    reward = 0.0
+    
+    # Only apply if we are on the opponent's side (Attacking)
+    # agent_on_sides is True if on OWN side, so False means we are attacking
+    if state['agent_on_sides'][agent_idx]:
+        return 0.0
+        
+    my_pos = state['agent_position'][agent_idx]
+    my_teammates = agent_inds_of_team[team]
+    
+    # Iterate through all agents to find opponents
+    for idx in range(len(state['agent_position'])):
+        if idx not in my_teammates:
+            # Only care about opponents who are NOT tagged (active threats)
+            if not state['agent_is_tagged'][idx]:
+                opp_pos = state['agent_position'][idx]
+                dist = np.linalg.norm(my_pos - opp_pos)
+                
+                if dist < avoid_dist:
+                    # Penalty scales from 0.0 (at avoid_dist) to max_penalty (at 0m)
+                    proximity_factor = 1.0 - (dist / avoid_dist)
+                    reward -= proximity_factor * max_penalty
+            
+    return reward
+
+# --- Main Custom Reward Function ---
+
+def custom_dense_reward(
+    agent_id: str,
+    team: Team,
+    agents: list,
+    agent_inds_of_team: dict,
+    state: dict,
+    prev_state: dict,
+    env_size: np.ndarray,
+    agent_radius: np.ndarray,
+    catch_radius: float,
+    scrimmage_coords: np.ndarray,
+    max_speeds: list,
+    tagging_cooldown: float
+):
+    """
+    A modular dense reward function designed for easier learning and evaluation.
+    """
+    # --- Configuration Parameters ---
+    PARAMS = {
+        # Border parameters
+        'border_buffer': 5.0,
+        'oob_penalty': 2.0,
+        'proximity_max_penalty': 0.5,
+        
+        # Offense parameters
+        'goal_progress_multiplier': 0.1,   # Toward enemy flag
+        'flag_grab_reward': 5.0,           # Picking up flag
+        'return_progress_multiplier': 0.1, # Toward home base with flag
+        'flag_capture_reward': 10.0,       # Scoring the flag
+        'enemy_avoidance_dist': 15.0,      # Stay 15m away from defenders
+        'enemy_proximity_penalty': 0.5,    # Penalty for being near defenders
+        
+        # Defense parameters
+        'tag_reward': 3.0,                 # Tagging any opponent
+        'flag_defender_reward': 7.0,       # Extra reward for tagging flag carrier
+        'intercept_progress_multiplier': 0.05, # Toward opponent flag-carrier
+        
+        # Coordination parameters
+        'teammate_avoidance_dist': 15.0,   # Keep 15m distance from teammates
+        'teammate_proximity_penalty': 0.2, # Penalty for clustering
+        
+        # Safety parameters
+        'tagged_penalty': 10.0,             # Penalty for getting tagged
+    }
+    
+    reward = 0.0
+    agent_idx = agents.index(agent_id)
+    
+    # 1. BORDER PENALTIES
+    reward += _reward_border_penalty(
+        state, agent_idx, env_size, 
+        PARAMS['border_buffer'], 
+        PARAMS['oob_penalty'], 
+        PARAMS['proximity_max_penalty']
+    )
+    
+    # 2. GOAL PROGRESS (Toward enemy flag)
+    reward += _reward_goal_progress(
+        state, prev_state, agent_idx, team, 
+        PARAMS['goal_progress_multiplier']
+    )
+
+    # 3. FLAG GRAB
+    reward += _reward_flag_grab(
+        state, prev_state, agent_idx, 
+        PARAMS['flag_grab_reward']
+    )
+
+    # 4. RETURN PROGRESS (Toward home with flag)
+    reward += _reward_return_progress(
+        state, prev_state, agent_idx, team, 
+        PARAMS['return_progress_multiplier']
+    )
+
+    # 5. FLAG CAPTURE (Team success)
+    reward += _reward_flag_capture(
+        state, prev_state, team, 
+        PARAMS['flag_capture_reward']
+    )
+
+    # 6. TAGGING (Defense)
+    reward += _reward_tagging(
+        state, agent_idx, team,
+        PARAMS['tag_reward'],
+        PARAMS['flag_defender_reward']
+    )
+
+    # 7. TEAMMATE PROXIMITY (Coordination)
+    reward += _reward_teammate_proximity(
+        state, agent_idx, team, agent_inds_of_team,
+        PARAMS['teammate_avoidance_dist'],
+        PARAMS['teammate_proximity_penalty']
+    )
+
+    # 8. TAGGED PENALTY (Safety)
+    reward += _reward_tagged_penalty(
+        state, prev_state, agent_idx, 
+        PARAMS['tagged_penalty']
+    )
+
+    # 9. INTERCEPT PROGRESS (Defense)
+    reward += _reward_intercept_progress(
+        state, prev_state, agent_idx, team, agents, agent_inds_of_team,
+        PARAMS['intercept_progress_multiplier']
+    )
+
+    # 10. ENEMY PROXIMITY (Attacking Safety)
+    reward += _reward_enemy_proximity(
+        state, agent_idx, team, agent_inds_of_team,
+        PARAMS['enemy_avoidance_dist'],
+        PARAMS['enemy_proximity_penalty']
+    )
+
+    return reward
+
