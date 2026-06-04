@@ -17,7 +17,7 @@
 # authorized by the U.S. Government may violate any copyrights that exist in this
 # work.
 
-# SPDX-License-Identifier: BSD-3-Clause
+# SPDX-License-Identifier: BSD-3-ClauseERROR: Package 'pyquaticus' requires a different Python: 3.13.13 not in 
 
 """
 #Configureable Rewards
