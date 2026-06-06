@@ -2,6 +2,7 @@ import pyquaticus
 from pyquaticus import pyquaticus_v0
 from pyquaticus.base_policies.voting_policy import VotingPolicy
 from pyquaticus.envs.pyquaticus import Team
+from pyquaticus.utils.rewards import custom_dense_reward
 import numpy as np
 
 # Ρυθμίσεις περιβάλλοντος
@@ -11,8 +12,11 @@ config_dict = {
     "sim_speedup_factor": 4, 
 }
 
+# Δημιουργία reward config
+my_reward_config = {f'agent_{i}': custom_dense_reward for i in range(6)}
+
 # Δημιουργία περιβάλλοντος 3v3
-env = pyquaticus_v0.PyQuaticusEnv(team_size=3, config_dict=config_dict, render_mode='human')
+env = pyquaticus_v0.PyQuaticusEnv(team_size=3, config_dict=config_dict, reward_config=my_reward_config, render_mode='human')
 obs, info = env.reset()
 
 # Δημιουργία των πολιτικών
