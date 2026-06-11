@@ -432,7 +432,7 @@ def custom_dense_reward(
     scrimmage_coords: np.ndarray,
     max_speeds: list,
     tagging_cooldown: float
-):
+    ):
     """
     A modular dense reward function designed for easier learning and evaluation.
     """
