@@ -92,3 +92,29 @@ class Agent:
                 break
                 
         return total_reward
+
+    def get_bids(self, current_env, current_obs_dict, current_info_dict, n_steps=5, decay_factor=0.9):
+        """
+        High-level function that gets sequences from mentors, evaluates them,
+        extracts the first action, resolves duplicates, and normalizes to 0-90.
+        Returns a dictionary of {action: normalized_bid}
+        """
+        all_suggestions = self.get_all_suggestions(current_env, current_obs_dict, current_info_dict, n_steps)
+        evaluations = self.evaluate_all_suggestions(all_suggestions, current_env, decay_factor)
+        
+        raw_bids = {}
+        for record in evaluations:
+            first_action = record["sequence"][0]
+            eval_value = record["eval"]
+            
+            # If two mentors suggest the same first action, we take the max evaluation
+            if first_action not in raw_bids:
+                raw_bids[first_action] = eval_value
+            else:
+                if eval_value > raw_bids[first_action]:
+                    raw_bids[first_action] = eval_value
+                    
+        if len(raw_bids) == 0:
+            return {}
+            
+        return raw_bids
