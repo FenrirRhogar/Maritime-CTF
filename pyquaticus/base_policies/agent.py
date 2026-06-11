@@ -1,5 +1,7 @@
 import copy
+import numpy as np
 from pyquaticus.base_policies.mentor import Mentor
+from pyquaticus.config import ACTION_MAP
 
 class Agent:
     def __init__(self, agent_id, env, num_mentors=1):
@@ -118,3 +120,119 @@ class Agent:
             return {}
             
         return raw_bids
+
+    def vote(self, current_env, current_obs_dict, current_info_dict, mechanism='plurality', n_steps=5, decay_factor=0.9):
+        """
+        Gathers suggestions from mentors, evaluates them, aggregates votes, and returns the selected action.
+        """
+        all_suggestions = self.get_all_suggestions(current_env, current_obs_dict, current_info_dict, n_steps)
+        if not all_suggestions:
+            return 16
+            
+        evaluations = self.evaluate_all_suggestions(all_suggestions, current_env, decay_factor)
+        
+        proposals = {}
+        scores = {}
+        for idx, record in enumerate(evaluations):
+            first_action = record["sequence"][0]
+            eval_value = record["eval"]
+            
+            # Convert continuous to discrete if needed
+            if not isinstance(first_action, (int, np.integer)):
+                min_dist = float('inf')
+                best_idx = 16
+                for i, action_val in enumerate(ACTION_MAP):
+                    dist = np.linalg.norm(np.array(action_val) - np.array(first_action))
+                    if dist < min_dist:
+                        min_dist = dist
+                        best_idx = i
+                first_action = best_idx
+                
+            mapped_action = 16 if first_action == -1 else int(first_action)
+            proposals[f"mentor_{idx}"] = mapped_action
+            
+            if mapped_action not in scores:
+                scores[mapped_action] = eval_value
+            else:
+                scores[mapped_action] = max(scores[mapped_action], eval_value)
+                
+        unique_actions = list(scores.keys())
+        if not unique_actions:
+            return 16
+            
+        if mechanism == 'plurality':
+            counts = {}
+            for act in proposals.values():
+                counts[act] = counts.get(act, 0) + 1
+            max_votes = max(counts.values())
+            winners = [act for act, count in counts.items() if count == max_votes]
+            
+            if len(winners) == 1:
+                return winners[0]
+            return max(winners, key=lambda act: scores.get(act, -9999.0))
+            
+        elif mechanism == 'borda':
+            sorted_actions = sorted(unique_actions, key=lambda act: scores[act])
+            borda_points = {act: i for i, act in enumerate(sorted_actions)}
+            
+            final_scores = {}
+            for act in proposals.values():
+                final_scores[act] = final_scores.get(act, 0) + borda_points[act]
+                
+            return max(final_scores, key=final_scores.get)
+        else:
+            return max(scores, key=scores.get)
+
+    def get_voting_scores(self, current_env, current_obs_dict, current_info_dict, mechanism='borda', n_steps=5, decay_factor=0.9):
+        """
+        Runs the internal voting aggregation and returns a dictionary of actions and their calculated scores.
+        """
+        all_suggestions = self.get_all_suggestions(current_env, current_obs_dict, current_info_dict, n_steps)
+        if not all_suggestions:
+            return {16: 0.0}
+            
+        evaluations = self.evaluate_all_suggestions(all_suggestions, current_env, decay_factor)
+        
+        proposals = {}
+        scores = {}
+        for idx, record in enumerate(evaluations):
+            first_action = record["sequence"][0]
+            eval_value = record["eval"]
+            
+            # Convert continuous to discrete if needed
+            if not isinstance(first_action, (int, np.integer)):
+                min_dist = float('inf')
+                best_idx = 16
+                for i, action_val in enumerate(ACTION_MAP):
+                    dist = np.linalg.norm(np.array(action_val) - np.array(first_action))
+                    if dist < min_dist:
+                        min_dist = dist
+                        best_idx = i
+                first_action = best_idx
+                
+            mapped_action = 16 if first_action == -1 else int(first_action)
+            proposals[f"mentor_{idx}"] = mapped_action
+            
+            if mapped_action not in scores:
+                scores[mapped_action] = eval_value
+            else:
+                scores[mapped_action] = max(scores[mapped_action], eval_value)
+                
+        unique_actions = list(scores.keys())
+        final_scores = {}
+        
+        if mechanism == 'plurality':
+            counts = {}
+            for act in proposals.values():
+                counts[act] = counts.get(act, 0) + 1
+            for act in unique_actions:
+                final_scores[act] = float(counts[act]) + max(0.0, scores[act]) * 0.001
+        elif mechanism == 'borda':
+            sorted_actions = sorted(unique_actions, key=lambda act: scores[act])
+            borda_points = {act: i for i, act in enumerate(sorted_actions)}
+            for act in proposals.values():
+                final_scores[act] = final_scores.get(act, 0) + borda_points[act]
+        else:
+            final_scores = scores
+            
+        return final_scores

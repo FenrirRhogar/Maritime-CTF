@@ -1080,7 +1080,21 @@ class PyQuaticusEnv(PyQuaticusEnvBase):
                     )
                 )
 
+    def __deepcopy__(self, memo):
+        cls = self.__class__
+        result = cls.__new__(cls)
+        memo[id(self)] = result
+        for k, v in self.__dict__.items():
+            if k in ['screen', 'clock', 'agent_font', 'pygame_background_img', 'render_buffer', 'traj_render_buffer']:
+                setattr(result, k, None)
+            elif k == 'render_mode':
+                setattr(result, k, None)
+            else:
+                setattr(result, k, copy.deepcopy(v, memo))
+        return result
+
     def step(self, raw_action_dict):
+
         """
         Steps the environment forward in time by self.dt seconds, applying actions.
 

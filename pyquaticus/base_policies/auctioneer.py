@@ -31,7 +31,7 @@ class Auctioneer:
             normalized_bids[agent_id] = {}
             for action, bid_value in bids.items():
                 if global_max == global_min:
-                    norm = 90.0
+                    norm = 0.0 if global_max == 0.0 else 90.0
                 else:
                     norm = ((bid_value - global_min) / (global_max - global_min)) * 90.0
                 normalized_bids[agent_id][action] = norm

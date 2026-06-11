@@ -26,12 +26,12 @@ class Mentor:
             policy_num = random.randint(1, 3)
             
             if policy_num == 1:
-                mode_num = random.randint(1, 6)
+                mode_num = random.randint(1, 4)
                 selected_mode = self.modes[mode_num]
                 GeneratedPolicyClass = AttackGen(self.agent_id, env, mode=selected_mode)
                 
             elif policy_num == 2:
-                mode_num = random.randint(1, 6)
+                mode_num = random.randint(1, 4)
                 selected_mode = self.modes[mode_num]
                 GeneratedPolicyClass = DefendGen(self.agent_id, env, mode=selected_mode)
                 
@@ -81,6 +81,8 @@ class Mentor:
                 
                 # Since the batch size is 1, the action is the first item in the list
                 action = actions[0]
+                if action == -1:
+                    action = 16
                 sequence.append(action)
                 
                 # Make the action dictionary for the environment
