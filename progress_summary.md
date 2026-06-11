@@ -30,12 +30,13 @@ We created the `Agent` class to represent an individual participant on the team 
 - **Encapsulation:** Making the Agent "own" its Mentors keeps the code clean. The main simulation loop only has to interact with the Agent, and the Agent handles querying its Mentors internally.
 - **The Decay Factor:** Adding a decay factor ensures that immediate rewards are valued higher than future rewards. Since the environment simulation assumes other agents are standing still (which becomes less accurate the further into the future you simulate), decaying the reward prevents the agent from making wildly optimistic bids based on a highly inaccurate 5-step future.
 - **Custom Reward Compatibility:** By simulating the sequence using `sim_env.step()`, the Agent automatically calculates its evaluation using the exact custom dense reward function defined in your `PyQuaticusEnv` configuration, requiring zero duplicate math.
+- **Malicious Agents (Adversarial Lookahead):** If an agent is initialized with `is_malicious=True` and a `target_enemy_id`, it secretly consults an Enemy Mentor to see what the opponent is planning. If the opponent's sequence yields a higher score for the opponent than the agent's best sequence yields for itself, the agent maliciously forces a bid of `999999.0` on the opponent's action to steal it!
 
 ## 3. The Auctioneer Module (`auctioneer.py`)
 
 **What we did:**
 We created the `Auctioneer` class to handle the bidding and allocation of the 17 available actions across all agents.
-- It provides a `normalize_all_bids()` method that takes every bid from every agent, finds the absolute `global_max` and `global_min`, and safely normalizes all bids team-wide to a scale of `0-90`.
+- It provides a `normalize_all_bids()` method that takes every bid from every agent, finds the absolute `global_max` and `global_min`, and safely normalizes all bids team-wide to a scale of `0-100`.
 - We implemented a greedy, Deferred Acceptance / Top Trading Cycle algorithm inside `run_auction()`.
   1. It sorts every agent's personal bids from highest to lowest.
   2. It enters a `while` loop that continues until every agent has an assigned action.
@@ -46,7 +47,7 @@ We created the `Auctioneer` class to handle the bidding and allocation of the 17
 - If an agent loses out on all their desired actions, they default to action `16` (stay still).
 
 **Why we did it:**
-- **Global Normalization:** Normalizing globally ensures that an objectively weak sequence isn't artificially inflated to a `90` just because it was an agent's personal best option. It maintains mathematical fairness across the team.
+- **Global Normalization:** Normalizing globally ensures that an objectively weak sequence isn't artificially inflated to a `100` just because it was an agent's personal best option. It maintains mathematical fairness across the team.
 - **Top Choice Iteration:** By iteratively resolving conflicts based on top preferences, the algorithm ensures that the team maximizes total welfare greedily without needing complex graph-matching libraries like `scipy`. It is robust, easy to read for students, and handles multi-agent conflicts gracefully.
 
 
