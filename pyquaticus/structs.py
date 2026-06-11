@@ -209,6 +209,18 @@ class RenderingPlayer(Player):
                 width=int(self.render_radius/2))
             
 
+    def __deepcopy__(self, memo):
+        cls = self.__class__
+        result = cls.__new__(cls)
+        memo[id(self)] = result
+        for k, v in self.__dict__.items():
+            if k in ['pygame_agent', 'pygame_agent_base', 'pygame_agent_rect']:
+                setattr(result, k, None)
+            else:
+                setattr(result, k, copy.deepcopy(v, memo))
+        return result
+
+
 @dataclass
 class Flag:
     """
