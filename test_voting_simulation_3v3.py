@@ -1,58 +1,56 @@
 import pyquaticus
 from pyquaticus import pyquaticus_v0
-from pyquaticus.base_policies.voting_policy import VotingPolicy
+from pyquaticus.base_policies.agent import Agent
 from pyquaticus.envs.pyquaticus import Team
 from pyquaticus.utils.rewards import custom_dense_reward
 import numpy as np
 
-# Ρυθμίσεις περιβάλλοντος
+# Configuration
 config_dict = {
     "max_time": 600.0,
     "max_score": 10,
     "sim_speedup_factor": 4, 
 }
 
-# Δημιουργία reward config
 my_reward_config = {f'agent_{i}': custom_dense_reward for i in range(6)}
 
-# Δημιουργία περιβάλλοντος 3v3
-env = pyquaticus_v0.PyQuaticusEnv(team_size=3, config_dict=config_dict, reward_config=my_reward_config, render_mode='human')
+# render_mode=None makes the simulation run instantly without opening a Pygame window
+env = pyquaticus_v0.PyQuaticusEnv(team_size=3, config_dict=config_dict, reward_config=my_reward_config, render_mode=None)
 obs, info = env.reset()
 
-# Δημιουργία των πολιτικών
 blue_agents = [f'agent_{i}' for i in range(3)]
 red_agents = [f'agent_{i}' for i in range(3, 6)]
 
-# Blue Team: Plurality Mechanism
-blue_policies = {aid: VotingPolicy(aid, env, mechanism='plurality') for aid in blue_agents}
+# Initialize our Agents
+blue_agents_obj = {aid: Agent(aid, env, num_mentors=2) for aid in blue_agents}
+red_agents_obj = {aid: Agent(aid, env, num_mentors=2) for aid in red_agents}
 
-# Red Team: Borda Mechanism
-red_policies = {aid: VotingPolicy(aid, env, mechanism='borda') for aid in red_agents}
+blue_match_reward = 0.0
+red_match_reward = 0.0
 
-print("Ξεκινάει η προσομοίωση 3v3...")
-print("Blue Team: Plurality | Red Team: Borda")
-
-try:
-    while True:
-        # Συλλογή actions για όλους τους πράκτορες
-        actions = {}
+while True:
+    actions = {}
+    
+    # Blue Agents (Plurality)
+    for aid in blue_agents:
+        actions[aid] = blue_agents_obj[aid].vote(env, obs, info, mechanism='plurality')
         
-        # Blue Agents
-        for aid in blue_agents:
-            actions[aid] = blue_policies[aid].compute_action(obs[aid], info)
-            
-        # Red Agents
-        for aid in red_agents:
-            actions[aid] = red_policies[aid].compute_action(obs[aid], info)
+    # Red Agents (Borda)
+    for aid in red_agents:
+        actions[aid] = red_agents_obj[aid].vote(env, obs, info, mechanism='borda')
+    
+    # Step
+    obs, reward, terminated, truncated, info = env.step(actions)
+    
+    # Accumulate rewards
+    for aid in blue_agents:
+        blue_match_reward += reward[aid]
+    for aid in red_agents:
+        red_match_reward += reward[aid]
+    
+    if any(terminated.values()) or any(truncated.values()):
+        break
         
-        # Εκτέλεση βήματος
-        obs, reward, terminated, truncated, info = env.step(actions)
-        
-        if any(terminated.values()) or any(truncated.values()):
-            print("Η προσομοίωση ολοκληρώθηκε.")
-            break
-            
-except KeyboardInterrupt:
-    print("\nΔιακοπή από τον χρήστη.")
-finally:
-    env.close()
+print(f"Plurality Reward: {blue_match_reward:.2f}")
+print(f"Borda Reward: {red_match_reward:.2f}")
+env.close()
