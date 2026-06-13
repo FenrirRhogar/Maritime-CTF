@@ -256,9 +256,7 @@ def _reward_goal_progress(state, prev_state, agent_idx, team, progress_multiplie
     if state['agent_has_flag'][agent_idx]:
         return 0.0
 
-    # Only reward if we are on the opponent's side
-    if state['agent_on_sides'][agent_idx]:
-        return 0.0
+    # We removed the restriction so agents get rewarded for moving toward the enemy flag immediately!
 
     opponent_team = 1 - int(team) # If we are 0 (Blue), opponent is 1 (Red)
     flag_pos = state['flag_position'][opponent_team]
@@ -417,6 +415,90 @@ def _reward_enemy_proximity(state, agent_idx, team, agent_inds_of_team, avoid_di
             
     return reward
 
+def _reward_evasion_progress(state, prev_state, agent_idx, team, agent_inds_of_team, evasion_multiplier):
+    """Rewards maximizing distance from the nearest active defender when attacking."""
+    reward = 0.0
+    
+    # Only apply if we are attacking (on the opponent's side)
+    if state['agent_on_sides'][agent_idx]:
+        return 0.0
+        
+    my_curr_pos = state['agent_position'][agent_idx]
+    my_prev_pos = prev_state['agent_position'][agent_idx]
+    my_teammates = agent_inds_of_team[team]
+    
+    # Find the closest active defender
+    closest_enemy_idx = None
+    min_dist = 999999.0
+    
+    for idx in range(len(state['agent_position'])):
+        if idx not in my_teammates:
+            # Only care about opponents who are NOT tagged
+            if not state['agent_is_tagged'][idx]:
+                opp_pos = state['agent_position'][idx]
+                dist = np.linalg.norm(my_curr_pos - opp_pos)
+                if dist < min_dist:
+                    min_dist = dist
+                    closest_enemy_idx = idx
+                    
+    if closest_enemy_idx is not None:
+        enemy_curr_pos = state['agent_position'][closest_enemy_idx]
+        
+        dist_curr = np.linalg.norm(my_curr_pos - enemy_curr_pos)
+        dist_prev = np.linalg.norm(my_prev_pos - enemy_curr_pos)
+        
+        # If distance increased, we successfully evaded!
+        if dist_curr > dist_prev:
+            progress = dist_curr - dist_prev
+            # Higher reward for dodging when they are very close to us
+            closeness_multiplier = 100.0 / max(dist_prev, 1.0)
+            reward += progress * closeness_multiplier * evasion_multiplier
+            
+    return reward
+
+def _reward_defense_chase(state, prev_state, agent_idx, team, agent_inds_of_team, chase_multiplier):
+    """Rewards minimizing distance to the nearest invading opponent when defending."""
+    reward = 0.0
+    
+    # Only apply if we are defending (on our own side)
+    if not state['agent_on_sides'][agent_idx]:
+        return 0.0
+        
+    my_curr_pos = state['agent_position'][agent_idx]
+    my_prev_pos = prev_state['agent_position'][agent_idx]
+    my_teammates = agent_inds_of_team[team]
+    
+    # Find the closest invading opponent
+    closest_invader_idx = None
+    min_dist = 999999.0
+    
+    for idx in range(len(state['agent_position'])):
+        if idx not in my_teammates:
+            # Check if this opponent is on OUR side (they are invading) and not tagged
+            # For the opponent, 'agent_on_sides' is True if they are on THEIR side.
+            # So if it's False, they are on OUR side!
+            if not state['agent_on_sides'][idx] and not state['agent_is_tagged'][idx]:
+                opp_pos = state['agent_position'][idx]
+                dist = np.linalg.norm(my_curr_pos - opp_pos)
+                if dist < min_dist:
+                    min_dist = dist
+                    closest_invader_idx = idx
+                    
+    if closest_invader_idx is not None:
+        invader_curr_pos = state['agent_position'][closest_invader_idx]
+        
+        dist_curr = np.linalg.norm(my_curr_pos - invader_curr_pos)
+        dist_prev = np.linalg.norm(my_prev_pos - invader_curr_pos)
+        
+        # If distance decreased, we successfully chased!
+        if dist_curr < dist_prev:
+            progress = dist_prev - dist_curr
+            # Higher reward for chasing when we are very close to tagging them
+            closeness_multiplier = 100.0 / max(dist_curr, 1.0)
+            reward += progress * closeness_multiplier * chase_multiplier
+            
+    return reward
+
 # --- Main Custom Reward Function ---
 
 def custom_dense_reward(
@@ -439,7 +521,7 @@ def custom_dense_reward(
     # --- Configuration Parameters ---
     PARAMS = {
         # Border parameters
-        'border_buffer': 5.0,
+        'border_buffer': 2.5,
         'oob_penalty': 2.0,
         'proximity_max_penalty': 0.5,
         
@@ -447,17 +529,19 @@ def custom_dense_reward(
         'goal_progress_multiplier': 0.1,   # Toward enemy flag
         'flag_grab_reward': 5.0,           # Picking up flag
         'return_progress_multiplier': 0.1, # Toward home base with flag
-        'flag_capture_reward': 10.0,       # Scoring the flag
-        'enemy_avoidance_dist': 15.0,      # Stay 15m away from defenders
-        'enemy_proximity_penalty': 0.5,    # Penalty for being near defenders
+        'flag_capture_reward': 15.0,       # Scoring the flag
+        'enemy_avoidance_dist': 10.0,      # Stay 10m away from defenders
+        'enemy_proximity_penalty': 1,    # Penalty for being near defenders
         
         # Defense parameters
         'tag_reward': 3.0,                 # Tagging any opponent
         'flag_defender_reward': 7.0,       # Extra reward for tagging flag carrier
         'intercept_progress_multiplier': 0.05, # Toward opponent flag-carrier
+        'defense_chase_multiplier': 0.1,   # Toward any invading enemy
+        'evasion_progress_multiplier': 0.05, # Dodging enemies when attacking
         
         # Coordination parameters
-        'teammate_avoidance_dist': 15.0,   # Keep 15m distance from teammates
+        'teammate_avoidance_dist': 5.0,   # Keep 5m distance from teammates
         'teammate_proximity_penalty': 0.2, # Penalty for clustering
         
         # Safety parameters
@@ -530,6 +614,18 @@ def custom_dense_reward(
         state, agent_idx, team, agent_inds_of_team,
         PARAMS['enemy_avoidance_dist'],
         PARAMS['enemy_proximity_penalty']
+    )
+
+    # 11. EVASION PROGRESS (Dodging)
+    reward += _reward_evasion_progress(
+        state, prev_state, agent_idx, team, agent_inds_of_team,
+        PARAMS['evasion_progress_multiplier']
+    )
+
+    # 12. DEFENSE CHASE (Intercepting Invaders)
+    reward += _reward_defense_chase(
+        state, prev_state, agent_idx, team, agent_inds_of_team,
+        PARAMS['defense_chase_multiplier']
     )
 
     return reward

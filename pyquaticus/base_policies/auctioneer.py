@@ -1,3 +1,5 @@
+import random
+
 class Auctioneer:
     def __init__(self, auction_type="second_price"):
         """
@@ -5,138 +7,122 @@ class Auctioneer:
         """
         self.auction_type = auction_type
         
-    def normalize_all_bids(self, all_bids):
-        """
-        Takes all raw bids from all agents and normalizes them 
-        globally to a 0-90 scale so they are comparable.
-        """
-        global_min = 999999.0
-        global_max = -999999.0
-        
-        has_bids = False
-        
-        for agent_id, bids in all_bids.items():
-            for action, bid_value in bids.items():
-                has_bids = True
-                if bid_value < global_min:
-                    global_min = bid_value
-                if bid_value > global_max:
-                    global_max = bid_value
-                    
-        if not has_bids:
-            return all_bids
-            
-        normalized_bids = {}
-        for agent_id, bids in all_bids.items():
-            normalized_bids[agent_id] = {}
-            for action, bid_value in bids.items():
-                if global_max == global_min:
-                    norm = 100.0
-                else:
-                    norm = ((bid_value - global_min) / (global_max - global_min)) * 100.0
-                normalized_bids[agent_id][action] = norm
-                
-        return normalized_bids
-
     def run_auction(self, raw_bids):
         """
-        Main function to run the auction.
-        raw_bids: dictionary like {"agent_0": {3: 45.2, 5: 12.0}, "agent_1": {3: 50.1, 14: 10.0}}
+        Runs an independent auction for every possible action. 
+        Agents can win multiple actions, but must pay for all of them!
+        raw_bids: dictionary like {"agent_0": {3: {"bid": 45.2, "true_eval": 50.0}, ...}}
         """
-        # 1. Globally normalize the bids across ALL agents
-        normalized_bids = self.normalize_all_bids(raw_bids)
-        
-        # 2. Setup the sorted lists for each agent
-        agent_sorted_bids = {}
-        
-        # Helper function to sort
-        def get_bid(item):
-            return item["bid"]
-            
-        for agent_id, bids in normalized_bids.items():
-            # Create a list of dictionaries for this agent
-            bid_list = []
-            for action, bid_value in bids.items():
-                bid_list.append({"action": action, "bid": bid_value})
-                
-            # Sort this agent's bids from highest to lowest
-            bid_list.sort(key=get_bid, reverse=True)
-            agent_sorted_bids[agent_id] = bid_list
-            
-        # 3. The Assignment Loop
-        assigned_agents = []
         assigned_actions = []
-        results = {}
+        agent_winnings = {}
         
-        # Keep looping until all agents have an action
-        while len(assigned_agents) < len(normalized_bids):
+        for agent_id in raw_bids.keys():
+            agent_winnings[agent_id] = []
             
-            # Step A: Clean up the top of everyone's lists
-            # If their top bid is an action that is already taken, remove it
-            for agent_id in agent_sorted_bids:
-                if agent_id not in assigned_agents:
-                    # While they have bids, and their top bid is an action that is already taken
-                    while len(agent_sorted_bids[agent_id]) > 0:
-                        top_action = agent_sorted_bids[agent_id][0]["action"]
-                        if top_action in assigned_actions:
-                            # Remove the taken action from their list
-                            agent_sorted_bids[agent_id].pop(0)
-                        else:
-                            # It's a valid action, stop popping
-                            break
-                            
-            # Step B: Find the absolute max bid among everyone's top bid
+        # 1. Find the personal best action for each agent to calculate Allocative Efficiency
+        personal_best_actions = {}
+        for agent_id, bids in raw_bids.items():
+            best_action = None
+            max_eval = -999999.0
+            for action, bid_data in bids.items():
+                if bid_data["true_eval"] > max_eval:
+                    max_eval = bid_data["true_eval"]
+                    best_action = action
+            personal_best_actions[agent_id] = best_action
+
+        # 2. Iterate over all 17 actions and auction them off independently
+        for action in range(17):
             highest_bid = -1.0
+            second_highest = 0.0
             winning_agent = None
-            winning_action = None
+            winning_true_eval = 0.0
+            winning_is_malicious = False
             
-            for agent_id in agent_sorted_bids:
-                if agent_id not in assigned_agents:
-                    if len(agent_sorted_bids[agent_id]) > 0:
-                        top_bid_value = agent_sorted_bids[agent_id][0]["bid"]
-                        top_action = agent_sorted_bids[agent_id][0]["action"]
-                        
-                        if top_bid_value > highest_bid:
-                            highest_bid = top_bid_value
-                            winning_agent = agent_id
-                            winning_action = top_action
-                            
-            # Step C: Assign the winner
-            if winning_agent is not None:
-                
-                # Calculate payment
-                payment = 0.0
-                if self.auction_type == "first_price":
-                    payment = highest_bid
-                elif self.auction_type == "second_price":
-                    # Look at the original normalized_bids to find the second highest bid for this action
-                    second_highest = 0.0
-                    for other_agent, other_bids in normalized_bids.items():
-                        if other_agent != winning_agent:
-                            if winning_action in other_bids:
-                                if other_bids[winning_action] > second_highest:
-                                    second_highest = other_bids[winning_action]
-                    payment = second_highest
+            for agent_id, bids in raw_bids.items():
+                if action in bids:
+                    bid_data = bids[action]
+                    bid_val = bid_data["bid"]
                     
-                results[winning_agent] = {
-                    "action": winning_action,
+                    if bid_val > highest_bid:
+                        second_highest = highest_bid
+                        highest_bid = bid_val
+                        winning_agent = agent_id
+                        winning_true_eval = bid_data["true_eval"]
+                        winning_is_malicious = bid_data.get("is_malicious", False)
+                    elif bid_val > second_highest:
+                        second_highest = bid_val
+                        
+            if winning_agent is not None:
+                # Calculate payment based on auction rules
+                payment = highest_bid if self.auction_type == "first_price" else second_highest
+                
+                agent_winnings[winning_agent].append({
+                    "action": action,
                     "bid": highest_bid,
-                    "payment": payment
+                    "true_eval": winning_true_eval,
+                    "payment": payment,
+                    "is_malicious": winning_is_malicious
+                })
+                assigned_actions.append(action)
+                
+        # 3. Process winnings for each agent
+        results = {}
+        all_actions = set(range(17))
+        available_actions = list(all_actions - set(assigned_actions))
+        
+        for agent_id in raw_bids.keys():
+            winnings = agent_winnings[agent_id]
+            
+            if len(winnings) > 0:
+                # Find the single BEST action they won
+                best_win = None
+                highest_eval = -999999.0
+                total_payment = 0.0
+                
+                for win in winnings:
+                    total_payment += win["payment"]
+                    if win["true_eval"] > highest_eval:
+                        highest_eval = win["true_eval"]
+                        best_win = win
+                
+                # Check for STRICT BANKRUPTCY (Over 100 budget)
+                if total_payment > 100.0001:
+                    print(f"BANKRUPTCY: {agent_id} spent {total_payment:.1f} (over 100 budget)!")
+                    # Forfeit! Give them stay still (16)
+                    results[agent_id] = {
+                        "action": 16,
+                        "bid": 0.0,
+                        "true_eval": 0.0,
+                        "payment": 0.0,
+                        "is_random": False,
+                        "is_malicious": False,
+                        "is_personal_best": False
+                    }
+                else:
+                    results[agent_id] = {
+                        "action": best_win["action"],
+                        "bid": best_win["bid"],
+                        "true_eval": best_win["true_eval"],
+                        "payment": total_payment, # They pay for ALL actions they won!
+                        "is_random": False,
+                        "is_malicious": best_win["is_malicious"],
+                        "is_personal_best": (best_win["action"] == personal_best_actions[agent_id])
+                    }
+            else:
+                # They won nothing! Give them a random action from the leftovers
+                if len(available_actions) > 0:
+                    random_action = random.choice(available_actions)
+                    available_actions.remove(random_action)
+                else:
+                    random_action = 16
+                    
+                results[agent_id] = {
+                    "action": random_action,
+                    "bid": 0.0,
+                    "true_eval": 0.0,
+                    "payment": 0.0,
+                    "is_random": True,
+                    "is_personal_best": False
                 }
                 
-                # We don't care about this agent anymore
-                assigned_agents.append(winning_agent)
-                assigned_actions.append(winning_action)
-            else:
-                # If we get here, it means all remaining agents have EMPTY lists
-                # Assign them action 16 (stay still)
-                for agent_id in agent_sorted_bids:
-                    if agent_id not in assigned_agents:
-                        results[agent_id] = {
-                            "action": 16,
-                            "bid": 0.0,
-                            "payment": 0.0
-                        }
-                        assigned_agents.append(agent_id)
-                        
         return results

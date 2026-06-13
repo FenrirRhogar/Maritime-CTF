@@ -56,6 +56,55 @@ class Agent:
             
         return evaluated_actions_seq
         
+    def _strip_pygame_and_deepcopy(self, current_env):
+        """
+        Temporarily hides Pygame C-objects from the environment and players,
+        runs deepcopy, and restores them. This prevents the 'cannot pickle Surface' error.
+        """
+        # 1. Hide env rendering objects
+        saved_render_mode = getattr(current_env, 'render_mode', None)
+        saved_screen = getattr(current_env, 'screen', None)
+        saved_bg = getattr(current_env, 'pygame_background_img', None)
+        saved_clock = getattr(current_env, 'clock', None)
+        saved_font = getattr(current_env, 'agent_font', None)
+        
+        current_env.render_mode = None
+        current_env.screen = None
+        current_env.pygame_background_img = None
+        current_env.clock = None
+        current_env.agent_font = None
+        
+        # 2. Hide player rendering objects
+        saved_players = {}
+        for pid, player in current_env.players.items():
+            p_agent = getattr(player, 'pygame_agent', None)
+            p_base = getattr(player, 'pygame_agent_base', None)
+            p_rect = getattr(player, 'pygame_agent_rect', None)
+            
+            saved_players[pid] = (p_agent, p_base, p_rect)
+            
+            player.pygame_agent = None
+            player.pygame_agent_base = None
+            player.pygame_agent_rect = None
+            
+        # 3. Perform the deepcopy safely!
+        sim_env = copy.deepcopy(current_env)
+        
+        # 4. Restore everything
+        current_env.render_mode = saved_render_mode
+        current_env.screen = saved_screen
+        current_env.pygame_background_img = saved_bg
+        current_env.clock = saved_clock
+        current_env.agent_font = saved_font
+        
+        for pid, player in current_env.players.items():
+            p_agent, p_base, p_rect = saved_players[pid]
+            player.pygame_agent = p_agent
+            player.pygame_agent_base = p_base
+            player.pygame_agent_rect = p_rect
+            
+        return sim_env
+
     def evaluate_sequence(self, sequence, current_env, decay_factor=0.9, eval_agent_id=None):
         """
         Simulates the sequence in a cloned environment, freezing other agents.
@@ -64,8 +113,8 @@ class Agent:
         if eval_agent_id is None:
             eval_agent_id = self.agent_id
             
-        # Make a deep copy of the environment
-        sim_env = copy.deepcopy(current_env)
+        # Use our safe deepcopy to bypass Pygame
+        sim_env = self._strip_pygame_and_deepcopy(current_env)
         
         total_reward = 0.0
         current_decay = 1.0
@@ -104,7 +153,7 @@ class Agent:
                 
         return total_reward
 
-    def get_bids(self, current_env, current_obs_dict, current_info_dict, n_steps=5, decay_factor=0.9):
+    def get_bids(self, current_env, current_obs_dict, current_info_dict, n_steps=5, decay_factor=0.9, bidding_strategy='truthful'):
         """
         High-level function that gets sequences, evaluates them,
         extracts the first action, and resolves duplicates.
@@ -120,16 +169,29 @@ class Agent:
             first_action = record["sequence"][0]
             eval_value = record["eval"]
             
-            # Keep track of our absolute best score
+            # Keep track of our absolute best score for malicious scaling
             if eval_value > my_best_eval:
                 my_best_eval = eval_value
-            
-            # If two mentors suggest the same first action, we take the max evaluation
-            if first_action not in raw_bids:
-                raw_bids[first_action] = eval_value
+                
+            # --- Apply Bidding Strategy ---
+            if bidding_strategy == 'shade':
+                # Bid 25% lower than the true evaluation to try and pay less
+                bid_value = eval_value * 0.75
             else:
-                if eval_value > raw_bids[first_action]:
-                    raw_bids[first_action] = eval_value
+                # Truthful bidding
+                bid_value = eval_value
+            
+            # If two mentors suggest the same first action, we take the max bid
+            if first_action not in raw_bids:
+                raw_bids[first_action] = {
+                    "bid": bid_value, 
+                    "true_eval": eval_value, 
+                    "is_malicious": False
+                }
+            else:
+                if bid_value > raw_bids[first_action]["bid"]:
+                    raw_bids[first_action]["bid"] = bid_value
+                    raw_bids[first_action]["true_eval"] = eval_value
                     
         # 2. If malicious, check if we want to steal an enemy action
         if self.is_malicious and self.target_enemy_id is not None:
@@ -143,15 +205,63 @@ class Agent:
                 enemy_first_action = record["sequence"][0]
                 enemy_eval_value = record["eval"]
                 
-                # If the enemy's sequence gives THEM a better reward than OUR best sequence gives US
-                if enemy_eval_value > my_best_eval:
-                    # We are malicious! We outbid them by bidding an impossibly high number on their action
-                    raw_bids[enemy_first_action] = 999999.0
+                # If the enemy's sequence gives THEM 1.2x a better reward than OUR best sequence gives US
+                if enemy_eval_value > 1.2 * my_best_eval:
+                    # We are purely malicious! We clear all our own bids and go all-in to steal this action!
+                    raw_bids = {}
+                    raw_bids[enemy_first_action] = {
+                        "bid": 100.0, 
+                        "true_eval": enemy_eval_value, 
+                        "is_malicious": True
+                    }
+                    # We found a target to sabotage, no need to look further
+                    break
                     
         if len(raw_bids) == 0:
             return {}
             
-        return raw_bids
+        # --- GREEDY BUDGET ALLOCATION (100 Points) ---
+        bid_list = []
+        for action in raw_bids:
+            bid_data = raw_bids[action]
+            bid_list.append({
+                "action": action, 
+                "bid": bid_data["bid"], 
+                "true_eval": bid_data["true_eval"], 
+                "is_malicious": bid_data["is_malicious"]
+            })
+            
+        # Simple bubble sort to rank bids by true_eval descending
+        for i in range(len(bid_list)):
+            for j in range(0, len(bid_list) - i - 1):
+                if bid_list[j]["true_eval"] < bid_list[j+1]["true_eval"]:
+                    temp = bid_list[j]
+                    bid_list[j] = bid_list[j+1]
+                    bid_list[j+1] = temp
+                    
+        budget = 100.0
+        final_bids = {}
+        
+        for item in bid_list:
+            if budget <= 0:
+                break
+                
+            desired_bid = item["bid"]
+            
+            # If the desired bid exceeds our remaining budget, shrink it!
+            if desired_bid > budget:
+                actual_bid = budget
+            else:
+                actual_bid = desired_bid
+                
+            final_bids[item["action"]] = {
+                "bid": actual_bid,
+                "true_eval": item["true_eval"], # True value remains the same!
+                "is_malicious": item["is_malicious"]
+            }
+            budget = budget - actual_bid
+            
+        return final_bids
 
     def vote(self, current_env, current_obs_dict, current_info_dict, mechanism='plurality', n_steps=5, decay_factor=0.9):
         """
@@ -201,19 +311,61 @@ class Agent:
             
             if len(winners) == 1:
                 return winners[0]
-            return max(winners, key=lambda act: scores.get(act, -9999.0))
+            
+            # Find the winner with the highest score
+            best_winner = None
+            highest_score = -9999.0
+            for act in winners:
+                score = scores.get(act, -9999.0)
+                if score > highest_score:
+                    highest_score = score
+                    best_winner = act
+            return best_winner
             
         elif mechanism == 'borda':
-            sorted_actions = sorted(unique_actions, key=lambda act: scores[act])
-            borda_points = {act: i for i, act in enumerate(sorted_actions)}
+            # Simple bubble sort to sort actions by score
+            sorted_actions = []
+            for act in unique_actions:
+                sorted_actions.append(act)
+                
+            for i in range(len(sorted_actions)):
+                for j in range(0, len(sorted_actions) - i - 1):
+                    act_j = sorted_actions[j]
+                    act_next = sorted_actions[j + 1]
+                    if scores[act_j] > scores[act_next]:
+                        # Swap
+                        temp = sorted_actions[j]
+                        sorted_actions[j] = sorted_actions[j+1]
+                        sorted_actions[j+1] = temp
+                        
+            borda_points = {}
+            for i in range(len(sorted_actions)):
+                act = sorted_actions[i]
+                borda_points[act] = i
             
             final_scores = {}
             for act in proposals.values():
-                final_scores[act] = final_scores.get(act, 0) + borda_points[act]
+                if act not in final_scores:
+                    final_scores[act] = 0
+                final_scores[act] = final_scores[act] + borda_points[act]
                 
-            return max(final_scores, key=final_scores.get)
+            # Find action with max final score
+            best_act = None
+            highest_final = -9999.0
+            for act in final_scores:
+                if final_scores[act] > highest_final:
+                    highest_final = final_scores[act]
+                    best_act = act
+            return best_act
         else:
-            return max(scores, key=scores.get)
+            # Default: return action with max score
+            best_act = None
+            highest = -9999.0
+            for act in scores:
+                if scores[act] > highest:
+                    highest = scores[act]
+                    best_act = act
+            return best_act
 
     def get_voting_scores(self, current_env, current_obs_dict, current_info_dict, mechanism='borda', n_steps=5, decay_factor=0.9):
         """
@@ -260,10 +412,30 @@ class Agent:
             for act in unique_actions:
                 final_scores[act] = float(counts[act]) + max(0.0, scores[act]) * 0.001
         elif mechanism == 'borda':
-            sorted_actions = sorted(unique_actions, key=lambda act: scores[act])
-            borda_points = {act: i for i, act in enumerate(sorted_actions)}
+            # Simple bubble sort to sort actions by score
+            sorted_actions = []
+            for act in unique_actions:
+                sorted_actions.append(act)
+                
+            for i in range(len(sorted_actions)):
+                for j in range(0, len(sorted_actions) - i - 1):
+                    act_j = sorted_actions[j]
+                    act_next = sorted_actions[j + 1]
+                    if scores[act_j] > scores[act_next]:
+                        # Swap
+                        temp = sorted_actions[j]
+                        sorted_actions[j] = sorted_actions[j+1]
+                        sorted_actions[j+1] = temp
+                        
+            borda_points = {}
+            for i in range(len(sorted_actions)):
+                act = sorted_actions[i]
+                borda_points[act] = i
+                
             for act in proposals.values():
-                final_scores[act] = final_scores.get(act, 0) + borda_points[act]
+                if act not in final_scores:
+                    final_scores[act] = 0
+                final_scores[act] = final_scores[act] + borda_points[act]
         else:
             final_scores = scores
             

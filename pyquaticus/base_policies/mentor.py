@@ -1,9 +1,9 @@
 import random
 import copy
 
-from pyquaticus.base_policies.base_policy_wrappers import AttackGen
-from pyquaticus.base_policies.base_policy_wrappers import DefendGen
-from pyquaticus.base_policies.base_policy_wrappers import CombinedGen
+from pyquaticus.base_policies.base_attack import BaseAttacker
+from pyquaticus.base_policies.base_defend import BaseDefender
+from pyquaticus.base_policies.base_combined import Heuristic_CTF_Agent
 
 class Mentor:
     def __init__(self, agent_id, env):
@@ -14,9 +14,7 @@ class Mentor:
             1: "nothing",
             2: "easy",
             3: "medium",
-            4: "hard",
-            5: "competition_easy",
-            6: "competition_medium"
+            4: "hard"
         }
         
         # We will create and save the actual policy objects here
@@ -28,35 +26,72 @@ class Mentor:
             if policy_num == 1:
                 mode_num = random.randint(1, 4)
                 selected_mode = self.modes[mode_num]
-                GeneratedPolicyClass = AttackGen(self.agent_id, env, mode=selected_mode)
+                policy_object = BaseAttacker(agent_id=self.agent_id, env=env, mode=selected_mode)
                 
             elif policy_num == 2:
                 mode_num = random.randint(1, 4)
                 selected_mode = self.modes[mode_num]
-                GeneratedPolicyClass = DefendGen(self.agent_id, env, mode=selected_mode)
+                policy_object = BaseDefender(agent_id=self.agent_id, env=env, mode=selected_mode)
                 
             elif policy_num == 3:
                 mode_num = random.randint(1, 4)
                 selected_mode = self.modes[mode_num]
-                GeneratedPolicyClass = CombinedGen(self.agent_id, env, mode=selected_mode)
+                policy_object = Heuristic_CTF_Agent(agent_id=self.agent_id, env=env, mode=selected_mode)
                 
-            # Create the actual policy object using the spaces from the environment
-            policy_object = GeneratedPolicyClass(
-                observation_space=env.observation_space,
-                action_space=env.action_space,
-                config={}
-            )
-            
             self.policy_objects.append(policy_object)
         
         
+    def _strip_pygame_and_deepcopy(self, current_env):
+        """
+        Temporarily hides Pygame C-objects from the environment and players,
+        runs deepcopy, and restores them. This prevents the 'cannot pickle Surface' error.
+        """
+        saved_render_mode = getattr(current_env, 'render_mode', None)
+        saved_screen = getattr(current_env, 'screen', None)
+        saved_bg = getattr(current_env, 'pygame_background_img', None)
+        saved_clock = getattr(current_env, 'clock', None)
+        saved_font = getattr(current_env, 'agent_font', None)
+        
+        current_env.render_mode = None
+        current_env.screen = None
+        current_env.pygame_background_img = None
+        current_env.clock = None
+        current_env.agent_font = None
+        
+        saved_players = {}
+        for pid, player in current_env.players.items():
+            p_agent = getattr(player, 'pygame_agent', None)
+            p_base = getattr(player, 'pygame_agent_base', None)
+            p_rect = getattr(player, 'pygame_agent_rect', None)
+            saved_players[pid] = (p_agent, p_base, p_rect)
+            player.pygame_agent = None
+            player.pygame_agent_base = None
+            player.pygame_agent_rect = None
+            
+        sim_env = copy.deepcopy(current_env)
+        
+        current_env.render_mode = saved_render_mode
+        current_env.screen = saved_screen
+        current_env.pygame_background_img = saved_bg
+        current_env.clock = saved_clock
+        current_env.agent_font = saved_font
+        
+        for pid, player in current_env.players.items():
+            p_agent, p_base, p_rect = saved_players[pid]
+            player.pygame_agent = p_agent
+            player.pygame_agent_base = p_base
+            player.pygame_agent_rect = p_rect
+            
+        return sim_env
+
     def generate_suggestions(self, current_env, current_obs_dict, current_info_dict, n_steps):
         suggested_sequences = []
         
         # Loop over the 2 policies
         for policy_object in self.policy_objects:
  
-            sim_env = copy.deepcopy(current_env)
+            # Use our safe deepcopy to bypass Pygame
+            sim_env = self._strip_pygame_and_deepcopy(current_env)
             
             sim_obs = current_obs_dict
             sim_info = current_info_dict
@@ -67,22 +102,13 @@ class Mentor:
             # Rollout loop
             for step in range(n_steps):
                 
-                # We need to make batches because the wrapper expects lists
-                obs_batch = []
-                obs_batch.append(sim_obs[self.agent_id])
+                # Get the action from the base policy
+                action = policy_object.compute_action(obs=sim_obs[self.agent_id], info=sim_info)
                 
-                info_batch = {}
-                for key in sim_info:
-                    info_batch[key] = []
-                    info_batch[key].append(sim_info[key])
-                
-                # Get the action from the wrapper policy
-                actions, state_outs, extra_info = policy_object.compute_actions(obs_batch, info_batch=info_batch)
-                
-                # Since the batch size is 1, the action is the first item in the list
-                action = actions[0]
+                # Normalize -1 to 16 to avoid confusing auction outputs
                 if action == -1:
                     action = 16
+                    
                 sequence.append(action)
                 
                 # Make the action dictionary for the environment
