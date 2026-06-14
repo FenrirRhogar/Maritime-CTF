@@ -94,8 +94,8 @@ try:
             # 1. Social Welfare (Sum of TRUE values of allocated actions)
             step_social_welfare += res.get('true_eval', res['bid'])
             
-            # 2. Individual Utility (True Value - Payment)
-            accumulated_utility[ag] += (res.get('true_eval', res['bid']) - res['payment'])
+            # 2. Individual Utility (Best Bid - Payment)
+            accumulated_utility[ag] += (res['bid'] - res['payment'])
             
             # 3. Allocative Efficiency (Did they get their max value action?)
             if res.get("is_personal_best", False):

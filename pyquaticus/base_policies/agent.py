@@ -168,24 +168,14 @@ class Agent:
             if eval_value > my_best_eval:
                 my_best_eval = eval_value
                 
-            # --- Apply Bidding Strategy ---
-            if bidding_strategy == 'shade':
-                # Bid 25% lower than the true evaluation to try and pay less
-                bid_value = eval_value * 0.75
-            else:
-                # Truthful bidding
-                bid_value = eval_value
-            
-            # If two mentors suggest the same first action, we take the max bid
+            # If two mentors suggest the same first action, we take the max eval
             if first_action not in raw_bids:
                 raw_bids[first_action] = {
-                    "bid": bid_value, 
                     "true_eval": eval_value, 
                     "is_malicious": False
                 }
             else:
-                if bid_value > raw_bids[first_action]["bid"]:
-                    raw_bids[first_action]["bid"] = bid_value
+                if eval_value > raw_bids[first_action]["true_eval"]:
                     raw_bids[first_action]["true_eval"] = eval_value
                     
         # 2. If malicious, check if we want to steal an enemy action
@@ -205,7 +195,6 @@ class Agent:
                     # We are purely malicious! We clear all our own bids and go all-in to steal this action!
                     raw_bids = {}
                     raw_bids[enemy_first_action] = {
-                        "bid": 100.0, 
                         "true_eval": enemy_eval_value, 
                         "is_malicious": True
                     }
@@ -215,45 +204,49 @@ class Agent:
         if len(raw_bids) == 0:
             return {}
             
-        # --- GREEDY BUDGET ALLOCATION (100 Points) ---
-        bid_list = []
-        for action in raw_bids:
-            bid_data = raw_bids[action]
-            # Create a tuple where the first element is what we want to sort by!
-            bid_list.append((
-                bid_data["true_eval"], 
-                action, 
-                bid_data["bid"], 
-                bid_data["is_malicious"]
-            ))
-            
-        bid_list.sort(reverse=True)
-                    
+        # --- PROPORTIONAL BUDGET NORMALIZATION ---
         budget = 100.0
+        
+        # 1. Find sum of all positive evals
+        sum_positive_evals = 0.0
+        for action in raw_bids:
+            if raw_bids[action]["true_eval"] > 0:
+                sum_positive_evals += raw_bids[action]["true_eval"]
+                
         final_bids = {}
         
-        for item in bid_list:
-            if budget <= 0:
-                break
-                
-            # item is now a tuple: (true_eval, action, bid, is_malicious)
-            item_true_eval = item[0]
-            item_action = item[1]
-            desired_bid = item[2]
-            item_is_malicious = item[3]
+        # 2. Distribute budget
+        for action, bid_data in raw_bids.items():
+            true_eval = bid_data["true_eval"]
+            is_malicious = bid_data["is_malicious"]
             
-            # If the desired bid exceeds our remaining budget, shrink it!
-            if desired_bid > budget:
-                actual_bid = budget
-            else:
-                actual_bid = desired_bid
+            # If the eval is zero/negative, or if there are no positive evals at all, we bid 0
+            if true_eval <= 0 or sum_positive_evals == 0:
+                final_bids[action] = {
+                    "bid": 0.0,
+                    "true_eval": true_eval,
+                    "is_malicious": is_malicious
+                }
+                continue
                 
-            final_bids[item_action] = {
-                "bid": actual_bid,
-                "true_eval": item_true_eval, # True value remains the same!
-                "is_malicious": item_is_malicious
+            if is_malicious:
+                # Malicious actions always get exactly the full budget to guarantee a steal
+                bid_value = budget
+            else:
+                # Normal proportional distribution
+                proportional_share = (true_eval / sum_positive_evals) * budget
+                
+                # Apply Bidding Strategy
+                if bidding_strategy == 'shade':
+                    bid_value = proportional_share * 0.75
+                else:
+                    bid_value = proportional_share
+                    
+            final_bids[action] = {
+                "bid": bid_value,
+                "true_eval": true_eval, # True value remains the same!
+                "is_malicious": is_malicious
             }
-            budget = budget - actual_bid
             
         return final_bids
 
@@ -273,16 +266,6 @@ class Agent:
             first_action = record["sequence"][0]
             eval_value = record["eval"]
             
-            # Convert continuous to discrete if needed
-            if not isinstance(first_action, (int, np.integer)):
-                min_dist = float('inf')
-                best_idx = 16
-                for i, action_val in enumerate(ACTION_MAP):
-                    dist = np.linalg.norm(np.array(action_val) - np.array(first_action))
-                    if dist < min_dist:
-                        min_dist = dist
-                        best_idx = i
-                first_action = best_idx
                 
             mapped_action = 16 if first_action == -1 else int(first_action)  
             proposals[f"mentor_{idx}"] = mapped_action
@@ -302,101 +285,33 @@ class Agent:
             if scores[act] > highest:
                 highest = scores[act]
                 best_act = act
+                
+        vote_results = {}
+        if mechanism == 'borda':
+            # Create tuples of (score, action) to sort
+            score_action_pairs = []
+            for act in scores:
+                score_action_pairs.append((scores[act], act))
+            score_action_pairs.sort(reverse=True)
+            
+            N = len(score_action_pairs)
+            for i in range(N):
+                act = score_action_pairs[i][1]
+                vote_results[act] = N - 1 - i
+        elif mechanism == 'plurality':
+            for act in scores:
+                vote_results[act] = 1 if act == best_act else 0
+        else:
+            for act in scores:
+                vote_results[act] = "N/A"
 
         if verbose:
             print(f"--- Voting for {self.agent_id} ({mechanism}) ---")
             for mentor, act in proposals.items():
                 print(f"  {mentor} suggested action: {act}")
-                
-            borda_points_dict = {}
-            if mechanism == 'borda':
-                score_action_pairs = []
-                for act in scores:
-                    score_action_pairs.append((scores[act], act))
-                score_action_pairs.sort(reverse=True)
-                
-                N = len(score_action_pairs)
-                for i in range(N):
-                    act = score_action_pairs[i][1]
-                    borda_points_dict[act] = N - 1 - i
-
             for act, score in scores.items():
-                if mechanism == 'plurality':
-                    vote_val = 1 if act == best_act else 0
-                elif mechanism == 'borda':
-                    vote_val = borda_points_dict[act]
-                else:
-                    vote_val = "N/A"
+                vote_val = vote_results[act]
                 print(f"  Action {act:2} -> Eval: {score:7.2f} | Vote/Points: {vote_val}")
             print(f"  >> Selected Action: {best_act}\n")
             
         return best_act
-
-    def get_voting_scores(self, current_env, current_obs_dict, current_info_dict, mechanism='borda', n_steps=5, decay_factor=0.9):
-        """
-        Runs the internal voting aggregation and returns a dictionary of actions and their calculated scores.
-        """
-        all_suggestions = self.get_all_suggestions(current_env, current_obs_dict, current_info_dict, n_steps)
-        if not all_suggestions:
-            return {16: 0.0}
-            
-        evaluations = self.evaluate_all_suggestions(all_suggestions, current_env, decay_factor)
-        
-        proposals = {}
-        scores = {}
-        for idx, record in enumerate(evaluations):
-            first_action = record["sequence"][0]
-            eval_value = record["eval"]
-            
-            # Convert continuous to discrete if needed
-            if not isinstance(first_action, (int, np.integer)):
-                min_dist = float('inf')
-                best_idx = 16
-                for i, action_val in enumerate(ACTION_MAP):
-                    dist = np.linalg.norm(np.array(action_val) - np.array(first_action))
-                    if dist < min_dist:
-                        min_dist = dist
-                        best_idx = i
-                first_action = best_idx
-                
-            mapped_action = 16 if first_action == -1 else int(first_action)
-            proposals[f"mentor_{idx}"] = mapped_action
-            
-            if mapped_action not in scores:
-                scores[mapped_action] = eval_value
-            else:
-                scores[mapped_action] = max(scores[mapped_action], eval_value)
-                
-        unique_actions = list(scores.keys())
-        final_scores = {}
-        
-        if mechanism == 'plurality':
-            # The agent casts a single vote for the highest evaluated action
-            best_act = None
-            highest = -9999.0
-            for act in scores:
-                if scores[act] > highest:
-                    highest = scores[act]
-                    best_act = act
-                    
-            for act in unique_actions:
-                final_scores[act] = 1.0 if act == best_act else 0.0
-        elif mechanism == 'borda':
-            # The agent assigns Borda points based on rank
-            score_action_pairs = []
-            for act in unique_actions:
-                score_action_pairs.append((scores[act], act))
-                
-            # Use Python's fast built-in sort. No lambda needed!
-            score_action_pairs.sort(reverse=True)
-            
-            N = len(score_action_pairs)
-            for i, pair in enumerate(score_action_pairs):
-                act = pair[1]
-                # 1st place gets N-1 points, 2nd gets N-2, ..., last gets 0
-                borda_points = N - 1 - i
-                final_scores[act] = float(borda_points)
-        else:
-            final_scores = scores
-            
-        return final_scores
