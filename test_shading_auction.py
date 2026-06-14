@@ -7,7 +7,7 @@ from pyquaticus.base_policies.auctioneer import Auctioneer
 
 # --- Environment Configurations ---
 config_dict = {
-    "max_time": 600,
+    "max_time": 60,
     "max_score": 3,
     "sim_speedup_factor": 4, 
 }
@@ -36,7 +36,6 @@ obs, info = env.reset()
 agents = []
 for i in range(6):
     agent_id = f'agent_{i}'
-    # Every agent has 2 mentors and is NOT malicious
     agents.append(Agent(agent_id, env, num_mentors=1, is_malicious=False))
 
 # Initialize Auctioneer with logic from arguments
@@ -91,8 +90,8 @@ try:
             print(f"{ag} -> Action {action_str:<12} | Bid: {res['bid']:>5.1f} | Paid: {res['payment']:>5.1f}")
             actions[ag] = res["action"]
             
-            # 1. Social Welfare (Sum of TRUE values of allocated actions)
-            step_social_welfare += res.get('true_eval', res['bid'])
+            # 1. Social Welfare (Sum of bids of allocated actions)
+            step_social_welfare += res['bid']
             
             # 2. Individual Utility (Best Bid - Payment)
             accumulated_utility[ag] += (res['bid'] - res['payment'])

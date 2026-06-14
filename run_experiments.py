@@ -13,7 +13,7 @@ scripts = {
 }
 
 auction_types = ["first_price", "second_price"]
-num_replications = 3
+num_replications = 2
 
 results = {scenario: {a_type: {"welfare": [], "efficiency": [], "utilities": [], "blue_caps": [], "red_caps": []} for a_type in auction_types} for scenario in scripts.keys()}
 
@@ -26,7 +26,7 @@ def run_simulation(scenario, script, a_type, rep):
     return scenario, a_type, rep, process.stdout
 
 # Run all tasks in parallel using a ThreadPool across all available CPU cores
-max_cores = os.cpu_count()-1
+max_cores = os.cpu_count()
 print(f"Detected {max_cores} CPU cores. Maximizing parallel workers...")
 
 with concurrent.futures.ThreadPoolExecutor(max_workers=max_cores) as executor:

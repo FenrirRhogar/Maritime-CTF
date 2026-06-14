@@ -3,7 +3,7 @@ import random
 class Auctioneer:
     def __init__(self, auction_type="second_price"):
         """
-        auction_type can be "first_price" or "second_price" (Vickrey)
+        auction_type can be "first_price" or "second_price"
         """
         self.auction_type = auction_type
         
@@ -32,7 +32,7 @@ class Auctioneer:
 
         # 2. Iterate over all 17 actions and auction them off independently
         for action in range(17):
-            highest_bid = -1.0
+            highest_bid = 0.0
             second_highest = 0.0
             winning_agent = None
             winning_true_eval = 0.0
@@ -84,9 +84,10 @@ class Auctioneer:
                     if win["true_eval"] > highest_eval:
                         highest_eval = win["true_eval"]
                         best_win = win
+                        
                 
-                # Check for STRICT BANKRUPTCY (Over 100 budget)
-                if total_payment > 100.0001:
+                # Check for Over 100 budget
+                if total_payment > 100:
                     print(f"BANKRUPTCY: {agent_id} spent {total_payment:.1f} (over 100 budget)!")
                     # Forfeit! Give them stay still (16)
                     results[agent_id] = {
@@ -103,13 +104,13 @@ class Auctioneer:
                         "action": best_win["action"],
                         "bid": best_win["bid"],
                         "true_eval": best_win["true_eval"],
-                        "payment": total_payment, # They pay for ALL actions they won!
+                        "payment": total_payment,
                         "is_random": False,
                         "is_malicious": best_win["is_malicious"],
                         "is_personal_best": (best_win["action"] == personal_best_actions[agent_id])
                     }
             else:
-                # They won nothing! Give them a random action from the leftovers
+                # They won nothing! Give random action from the leftovers
                 if len(available_actions) > 0:
                     random_action = random.choice(available_actions)
                     available_actions.remove(random_action)
