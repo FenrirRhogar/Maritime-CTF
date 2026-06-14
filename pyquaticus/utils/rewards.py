@@ -527,11 +527,11 @@ def custom_dense_reward(
         
         # Offense parameters
         'goal_progress_multiplier': 0.1,   # Toward enemy flag
-        'flag_grab_reward': 5.0,           # Picking up flag
+        'flag_grab_reward': 15.0,           # Picking up flag
         'return_progress_multiplier': 0.1, # Toward home base with flag
-        'flag_capture_reward': 15.0,       # Scoring the flag
-        'enemy_avoidance_dist': 10.0,      # Stay 10m away from defenders
-        'enemy_proximity_penalty': 1,    # Penalty for being near defenders
+        'flag_capture_reward': 25.0,       # Scoring the flag
+        'enemy_avoidance_dist': 10,      # Stay 10m away from defenders
+        'enemy_proximity_penalty': 5,    # Penalty for being near defenders
         
         # Defense parameters
         'tag_reward': 3.0,                 # Tagging any opponent
@@ -542,7 +542,7 @@ def custom_dense_reward(
         
         # Coordination parameters
         'teammate_avoidance_dist': 5.0,   # Keep 5m distance from teammates
-        'teammate_proximity_penalty': 0.2, # Penalty for clustering
+        'teammate_proximity_penalty': 2, # Penalty for clustering
         
         # Safety parameters
         'tagged_penalty': 10.0,             # Penalty for getting tagged

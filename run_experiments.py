@@ -15,7 +15,7 @@ scripts = {
 auction_types = ["first_price", "second_price"]
 num_replications = 6
 
-results = {scenario: {a_type: {"welfare": [], "efficiency": [], "utilities": []} for a_type in auction_types} for scenario in scripts.keys()}
+results = {scenario: {a_type: {"welfare": [], "efficiency": [], "utilities": [], "blue_caps": [], "red_caps": []} for a_type in auction_types} for scenario in scripts.keys()}
 
 print(f"Running all {6 * num_replications} experiments SIMULTANEOUSLY in parallel ({num_replications} replications each)...")
 
@@ -44,6 +44,14 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=max_cores) as executor:
         welfare_match = re.search(r"Total Social Welfare:\s*([\d\.]+)", output)
         efficiency_match = re.search(r"Average Allocative Efficiency:\s*([\d\.]+)", output)
         
+        score_matches = re.findall(r"Score - Blue:\s*(\d+)\s*\|\s*Red:\s*(\d+)", output)
+        if score_matches:
+            blue_caps = int(score_matches[-1][0])
+            red_caps = int(score_matches[-1][1])
+        else:
+            blue_caps = 0
+            red_caps = 0
+        
         welfare = float(welfare_match.group(1)) if welfare_match else 0.0
         efficiency = float(efficiency_match.group(1)) if efficiency_match else 0.0
         
@@ -58,6 +66,8 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=max_cores) as executor:
         results[scenario][a_type]["welfare"].append(welfare)
         results[scenario][a_type]["efficiency"].append(efficiency)
         results[scenario][a_type]["utilities"].append(utilities)
+        results[scenario][a_type]["blue_caps"].append(blue_caps)
+        results[scenario][a_type]["red_caps"].append(red_caps)
 
 # Now calculate the averages across all replications
 avg_results = {scenario: {} for scenario in scripts.keys()}
@@ -65,6 +75,8 @@ for scenario in scripts.keys():
     for a_type in auction_types:
         avg_welfare = np.mean(results[scenario][a_type]["welfare"])
         avg_eff = np.mean(results[scenario][a_type]["efficiency"])
+        avg_blue_caps = np.mean(results[scenario][a_type]["blue_caps"])
+        avg_red_caps = np.mean(results[scenario][a_type]["red_caps"])
         
         avg_utils = {}
         for i in range(6):
@@ -75,11 +87,26 @@ for scenario in scripts.keys():
         avg_results[scenario][a_type] = {
             "welfare": avg_welfare,
             "efficiency": avg_eff,
-            "utilities": avg_utils
+            "utilities": avg_utils,
+            "blue_caps": avg_blue_caps,
+            "red_caps": avg_red_caps
         }
 
-print("\nFinished running all experiments! Generating plots...")
+print("\n" + "="*50)
+print("FINAL SUMMARY REPORT")
+print("="*50)
+for scenario in scripts.keys():
+    print(f"\n--- {scenario.upper()} ---")
+    for a_type in auction_types:
+        d = avg_results[scenario][a_type]
+        print(f"  Auction: {a_type}")
+        print(f"    Avg Social Welfare: {d['welfare']:.2f}")
+        print(f"    Avg Allocative Eff: {d['efficiency']:.2f}%")
+        print(f"    Avg Blue Captures : {d['blue_caps']:.2f}")
+        print(f"    Avg Red Captures  : {d['red_caps']:.2f}")
+print("="*50)
 
+print("\nFinished running all experiments! Generating plots...")
 # Plotting
 fig, axes = plt.subplots(2, 2, figsize=(16, 12))
 

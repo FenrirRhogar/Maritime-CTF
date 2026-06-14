@@ -12,7 +12,7 @@ class Agent:
         # Create a list to hold the mentors
         self.mentors = []
         
-        # Create the specified number of mentors
+        # Creatementors
         for i in range(num_mentors):
             new_mentor = Mentor(self.agent_id, env)
             self.mentors.append(new_mentor)
@@ -119,10 +119,8 @@ class Agent:
         total_reward = 0.0
         current_decay = 1.0
         
-        # Loop through each action in the sequence
         for action in sequence:
             
-            # Make the action dictionary for the environment
             action_dict = {}
             for aid in sim_env.agents:
                 # The agent taking the sequence is eval_agent_id
@@ -132,19 +130,16 @@ class Agent:
                     # 16 is the "stay still" action for discrete mode (frozen in time)
                     action_dict[aid] = 16 
                     
-            # Step the cloned environment
+            # Step
             sim_obs, rewards, terminated, truncated, sim_info = sim_env.step(action_dict)
             
-            # Get the reward for this specific agent we are evaluating
             step_reward = rewards[eval_agent_id]
             
-            # Add the decayed reward to our total
             total_reward = total_reward + (step_reward * current_decay)
             
-            # Update the decay multiplier for the next step
             current_decay = current_decay * decay_factor
             
-            # Check if the game is over for this agent
+            # Check if the game is over 
             is_terminated = terminated[eval_agent_id]
             is_truncated = truncated[eval_agent_id]
             
@@ -224,20 +219,15 @@ class Agent:
         bid_list = []
         for action in raw_bids:
             bid_data = raw_bids[action]
-            bid_list.append({
-                "action": action, 
-                "bid": bid_data["bid"], 
-                "true_eval": bid_data["true_eval"], 
-                "is_malicious": bid_data["is_malicious"]
-            })
+            # Create a tuple where the first element is what we want to sort by!
+            bid_list.append((
+                bid_data["true_eval"], 
+                action, 
+                bid_data["bid"], 
+                bid_data["is_malicious"]
+            ))
             
-        # Simple bubble sort to rank bids by true_eval descending
-        for i in range(len(bid_list)):
-            for j in range(0, len(bid_list) - i - 1):
-                if bid_list[j]["true_eval"] < bid_list[j+1]["true_eval"]:
-                    temp = bid_list[j]
-                    bid_list[j] = bid_list[j+1]
-                    bid_list[j+1] = temp
+        bid_list.sort(reverse=True)
                     
         budget = 100.0
         final_bids = {}
@@ -246,7 +236,11 @@ class Agent:
             if budget <= 0:
                 break
                 
-            desired_bid = item["bid"]
+            # item is now a tuple: (true_eval, action, bid, is_malicious)
+            item_true_eval = item[0]
+            item_action = item[1]
+            desired_bid = item[2]
+            item_is_malicious = item[3]
             
             # If the desired bid exceeds our remaining budget, shrink it!
             if desired_bid > budget:
@@ -254,16 +248,16 @@ class Agent:
             else:
                 actual_bid = desired_bid
                 
-            final_bids[item["action"]] = {
+            final_bids[item_action] = {
                 "bid": actual_bid,
-                "true_eval": item["true_eval"], # True value remains the same!
-                "is_malicious": item["is_malicious"]
+                "true_eval": item_true_eval, # True value remains the same!
+                "is_malicious": item_is_malicious
             }
             budget = budget - actual_bid
             
         return final_bids
 
-    def vote(self, current_env, current_obs_dict, current_info_dict, mechanism='plurality', n_steps=5, decay_factor=0.9):
+    def vote(self, current_env, current_obs_dict, current_info_dict, mechanism='plurality', n_steps=5, decay_factor=0.9, verbose=False):
         """
         Gathers suggestions from mentors, evaluates them, aggregates votes, and returns the selected action.
         """
@@ -290,7 +284,7 @@ class Agent:
                         best_idx = i
                 first_action = best_idx
                 
-            mapped_action = 16 if first_action == -1 else int(first_action)
+            mapped_action = 16 if first_action == -1 else int(first_action)  
             proposals[f"mentor_{idx}"] = mapped_action
             
             if mapped_action not in scores:
@@ -302,70 +296,41 @@ class Agent:
         if not unique_actions:
             return 16
             
-        if mechanism == 'plurality':
-            counts = {}
-            for act in proposals.values():
-                counts[act] = counts.get(act, 0) + 1
-            max_votes = max(counts.values())
-            winners = [act for act, count in counts.items() if count == max_votes]
-            
-            if len(winners) == 1:
-                return winners[0]
-            
-            # Find the winner with the highest score
-            best_winner = None
-            highest_score = -9999.0
-            for act in winners:
-                score = scores.get(act, -9999.0)
-                if score > highest_score:
-                    highest_score = score
-                    best_winner = act
-            return best_winner
-            
-        elif mechanism == 'borda':
-            # Simple bubble sort to sort actions by score
-            sorted_actions = []
-            for act in unique_actions:
-                sorted_actions.append(act)
+        best_act = None
+        highest = -9999.0
+        for act in scores:
+            if scores[act] > highest:
+                highest = scores[act]
+                best_act = act
+
+        if verbose:
+            print(f"--- Voting for {self.agent_id} ({mechanism}) ---")
+            for mentor, act in proposals.items():
+                print(f"  {mentor} suggested action: {act}")
                 
-            for i in range(len(sorted_actions)):
-                for j in range(0, len(sorted_actions) - i - 1):
-                    act_j = sorted_actions[j]
-                    act_next = sorted_actions[j + 1]
-                    if scores[act_j] > scores[act_next]:
-                        # Swap
-                        temp = sorted_actions[j]
-                        sorted_actions[j] = sorted_actions[j+1]
-                        sorted_actions[j+1] = temp
-                        
-            borda_points = {}
-            for i in range(len(sorted_actions)):
-                act = sorted_actions[i]
-                borda_points[act] = i
-            
-            final_scores = {}
-            for act in proposals.values():
-                if act not in final_scores:
-                    final_scores[act] = 0
-                final_scores[act] = final_scores[act] + borda_points[act]
+            borda_points_dict = {}
+            if mechanism == 'borda':
+                score_action_pairs = []
+                for act in scores:
+                    score_action_pairs.append((scores[act], act))
+                score_action_pairs.sort(reverse=True)
                 
-            # Find action with max final score
-            best_act = None
-            highest_final = -9999.0
-            for act in final_scores:
-                if final_scores[act] > highest_final:
-                    highest_final = final_scores[act]
-                    best_act = act
-            return best_act
-        else:
-            # Default: return action with max score
-            best_act = None
-            highest = -9999.0
-            for act in scores:
-                if scores[act] > highest:
-                    highest = scores[act]
-                    best_act = act
-            return best_act
+                N = len(score_action_pairs)
+                for i in range(N):
+                    act = score_action_pairs[i][1]
+                    borda_points_dict[act] = N - 1 - i
+
+            for act, score in scores.items():
+                if mechanism == 'plurality':
+                    vote_val = 1 if act == best_act else 0
+                elif mechanism == 'borda':
+                    vote_val = borda_points_dict[act]
+                else:
+                    vote_val = "N/A"
+                print(f"  Action {act:2} -> Eval: {score:7.2f} | Vote/Points: {vote_val}")
+            print(f"  >> Selected Action: {best_act}\n")
+            
+        return best_act
 
     def get_voting_scores(self, current_env, current_obs_dict, current_info_dict, mechanism='borda', n_steps=5, decay_factor=0.9):
         """
@@ -406,36 +371,31 @@ class Agent:
         final_scores = {}
         
         if mechanism == 'plurality':
-            counts = {}
-            for act in proposals.values():
-                counts[act] = counts.get(act, 0) + 1
+            # The agent casts a single vote for the highest evaluated action
+            best_act = None
+            highest = -9999.0
+            for act in scores:
+                if scores[act] > highest:
+                    highest = scores[act]
+                    best_act = act
+                    
             for act in unique_actions:
-                final_scores[act] = float(counts[act]) + max(0.0, scores[act]) * 0.001
+                final_scores[act] = 1.0 if act == best_act else 0.0
         elif mechanism == 'borda':
-            # Simple bubble sort to sort actions by score
-            sorted_actions = []
+            # The agent assigns Borda points based on rank
+            score_action_pairs = []
             for act in unique_actions:
-                sorted_actions.append(act)
+                score_action_pairs.append((scores[act], act))
                 
-            for i in range(len(sorted_actions)):
-                for j in range(0, len(sorted_actions) - i - 1):
-                    act_j = sorted_actions[j]
-                    act_next = sorted_actions[j + 1]
-                    if scores[act_j] > scores[act_next]:
-                        # Swap
-                        temp = sorted_actions[j]
-                        sorted_actions[j] = sorted_actions[j+1]
-                        sorted_actions[j+1] = temp
-                        
-            borda_points = {}
-            for i in range(len(sorted_actions)):
-                act = sorted_actions[i]
-                borda_points[act] = i
-                
-            for act in proposals.values():
-                if act not in final_scores:
-                    final_scores[act] = 0
-                final_scores[act] = final_scores[act] + borda_points[act]
+            # Use Python's fast built-in sort. No lambda needed!
+            score_action_pairs.sort(reverse=True)
+            
+            N = len(score_action_pairs)
+            for i, pair in enumerate(score_action_pairs):
+                act = pair[1]
+                # 1st place gets N-1 points, 2nd gets N-2, ..., last gets 0
+                borda_points = N - 1 - i
+                final_scores[act] = float(borda_points)
         else:
             final_scores = scores
             
